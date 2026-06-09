@@ -11,21 +11,34 @@
         h2 { border-bottom: 1px solid var(--neon-cyan); padding-bottom: 5px; color: var(--neon-cyan); text-align: center; margin-top: 0; }
         .control-group { margin: 15px 0; display: flex; flex-direction: column; background: #111a2e; padding: 10px; border-radius: 6px; }
         label { margin-bottom: 8px; font-weight: bold; font-size: 0.85em; letter-spacing: 1px; color: #aaa;}
-        input[type="range"] { -webkit-appearance: none; width: 100%; background: #1a233d; height: 10px; border-radius: 5px; outline: none; }
+        input[type="range"] { -webkit-appearance: none; width: 100%; background: #1a233d; height: 10px; border-radius: 5px; outline: none; margin-bottom: 10px; }
         input[type="range"]::-webkit-slider-thumb { -webkit-appearance: none; width: 22px; height: 22px; background: var(--neon-cyan); border-radius: 50%; cursor: pointer; }
-        button { background: transparent; border: 2px solid var(--neon-cyan); color: var(--neon-cyan); padding: 12px; font-weight: bold; font-size: 1.1em; cursor: pointer; width: 100%; border-radius: 5px; margin-bottom: 10px; }
-        button:hover { background: var(--neon-cyan); color: #000; }
+        
+        /* Main Connect Button */
+        .btn-main { background: transparent; border: 2px solid var(--neon-cyan); color: var(--neon-cyan); padding: 12px; font-weight: bold; font-size: 1.1em; cursor: pointer; width: 100%; border-radius: 5px; margin-bottom: 10px; transition: 0.3s; }
+        .btn-main:hover { background: var(--neon-cyan); color: #000; }
+        
+        /* Quick Preset Buttons */
+        .preset-row { display: flex; gap: 5px; justify-content: space-between; }
+        .preset-btn { flex: 1; background: #1a233d; border: 1px solid var(--neon-cyan); color: var(--neon-cyan); padding: 6px 0; font-size: 0.75em; font-weight: bold; cursor: pointer; border-radius: 3px; }
+        .preset-btn:active { background: var(--neon-cyan); color: #000; }
+
         .val-disp { font-family: monospace; color: var(--neon-cyan); float: right; font-size: 1.2em; }
     </style>
 </head>
 <body>
     <div class="panel">
         <h2>URC10 // TACTICAL LINK</h2>
-        <button id="connectBtn">CONNECT OTG LINK</button>
+        <button id="connectBtn" class="btn-main">CONNECT OTG LINK</button>
         
         <div class="control-group">
-            <label>ACCELERATION RAMP <span id="rampVal" class="val-disp">25</span></label>
-            <input type="range" min="5" max="255" value="25" oninput="updateParam('R', this.value, 'rampVal')">
+            <label>ACCELERATION RAMP <span id="rampVal" class="val-disp">30</span></label>
+            <input type="range" id="rampSlider" min="5" max="255" value="30" oninput="updateParam('R', this.value, 'rampVal')">
+            <div class="preset-row">
+                <button class="preset-btn" onclick="setRamp(30)">30 (900 RPM)</button>
+                <button class="preset-btn" onclick="setRamp(60)">60 (400 RPM)</button>
+                <button class="preset-btn" onclick="setRamp(255)">255 (RAW MAX)</button>
+            </div>
         </div>
         
         <div class="control-group">
@@ -76,10 +89,15 @@
             document.getElementById(displayId).innerText = value;
             if (writer) {
                 const encoder = new TextEncoder();
-                // Formats packet, e.g., "FL95\n" or "R50\n"
                 const packet = `${command}${value}\n`;
                 await writer.write(encoder.encode(packet));
             }
+        }
+
+        // Quick Preset Logic
+        function setRamp(val) {
+            document.getElementById('rampSlider').value = val;
+            updateParam('R', val, 'rampVal');
         }
     </script>
 </body>
