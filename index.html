@@ -1,0 +1,68 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>TJ-XINETIC CONFIG</title>
+    <style>
+        :root { --neon-cyan: #00f3ff; --dark-bg: #0a0f1d; }
+        body { background: var(--dark-bg); color: #fff; font-family: sans-serif; padding: 20px; }
+        .panel { border: 1px solid var(--neon-cyan); padding: 20px; border-radius: 8px; max-width: 500px; margin: auto; }
+        h2 { border-bottom: 1px solid var(--neon-cyan); padding-bottom: 5px; color: var(--neon-cyan); letter-spacing: 2px; }
+        .control-group { margin: 20px 0; display: flex; flex-direction: column; }
+        label { margin-bottom: 5px; font-weight: bold; font-size: 0.9em; }
+        input[type="range"] { -webkit-appearance: none; width: 100%; background: #1a233d; height: 8px; border-radius: 4px; }
+        input[type="range"]::-webkit-slider-thumb { -webkit-appearance: none; width: 20px; height: 20px; background: var(--neon-cyan); border-radius: 50%; cursor: pointer; }
+        button { background: transparent; border: 1px solid var(--neon-cyan); color: var(--neon-cyan); padding: 10px 20px; font-weight: bold; cursor: pointer; width: 100%; transition: 0.3s; }
+        button:hover { background: var(--neon-cyan); color: #000; }
+        .val-disp { font-family: monospace; color: var(--neon-cyan); float: right; }
+    </style>
+</head>
+<body>
+    <div class="panel">
+        <h2>TJ-XINETIC // URC10 LINK</h2>
+        <button id="connectBtn">INITIALIZE OTG LINK</button>
+        <hr style="border-color:#1a233d; margin:20px 0;">
+        
+        <div class="control-group">
+            <label>RAMP STEP <span id="rampVal" class="val-disp">25</span></label>
+            <input type="range" id="ramp" min="5" max="255" value="25" oninput="updateParam('R', this.value, 'rampVal')">
+        </div>
+        <div class="control-group">
+            <label>FWD BIAS LEFT <span id="fblVal" class="val-disp">100</span></label>
+            <input type="range" id="fbl" min="50" max="100" value="100" oninput="updateParam('FL', this.value, 'fblVal')">
+        </div>
+        <div class="control-group">
+            <label>FWD BIAS RIGHT <span id="fbrVal" class="val-disp">100</span></label>
+            <input type="range" id="fbr" min="50" max="100" value="100" oninput="updateParam('FR', this.value, 'fbrVal')">
+        </div>
+    </div>
+
+    <script>
+        let port;
+        let writer;
+
+        document.getElementById('connectBtn').addEventListener('click', async () => {
+            try {
+                port = await navigator.serial.requestPort();
+                await port.open({ baudRate: 9600 });
+                writer = port.writable.getWriter();
+                document.getElementById('connectBtn').innerText = "LINK ACTIVE";
+                document.getElementById('connectBtn').style.borderColor = "#00ff66";
+                document.getElementById('connectBtn').style.color = "#00ff66";
+            } catch (err) {
+                alert("Serial Link Failed: " + err);
+            }
+        });
+
+        async function updateParam(command, value, displayId) {
+            document.getElementById(displayId).innerText = value;
+            if (writer) {
+                const encoder = new TextEncoder();
+                const packet = `${command}${value}\n`;
+                await writer.write(encoder.encode(packet));
+            }
+        }
+    </script>
+</body>
+</html>
