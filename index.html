@@ -15,9 +15,13 @@
         .branding-sub { font-size: 11px; font-weight: 700; color: var(--accent-cyan); letter-spacing: 4px; margin-bottom: 25px; text-transform: uppercase; }
         .card { background: var(--bg-card); padding: 22px; border-radius: 16px; margin-bottom: 20px; border: 1px solid #1f253d; text-align: left; }
         .card h3 { margin-top: 0; margin-bottom: 15px; font-size: 16px; text-transform: uppercase; color: var(--text-dark); border-bottom: 1px solid #1f253d; padding-bottom: 8px;}
-        button { background: #007aff; color: white; border: none; padding: 15px 20px; font-size: 15px; border-radius: 10px; cursor: pointer; font-weight: bold; width: 100%; margin: 6px 0; }
+        button { background: #007aff; color: white; border: none; padding: 15px 20px; font-size: 15px; border-radius: 10px; cursor: pointer; font-weight: bold; width: 100%; margin: 6px 0; display: block; }
         button.save { background: #34c759; }
-        button.connect { background: var(--accent-orange); margin-bottom: 20px; }
+        button.connect { background: var(--accent-orange); margin-bottom: 20px; width: 100%; }
+        button.disconnect { background: #ff3b30; margin-bottom: 20px; width: 100%; }
+        button.neutral-btn { background: #242b47; color: #b0b5c4; border: 1px solid #1f253d; font-size: 13px; padding: 10px; }
+        button.action-step { background: #34c759; font-size: 14px; padding: 12px; margin-top: 10px; display: none; }
+        .btn-row { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; margin-top: 5px; }
         .telemetry-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
         .telemetry-block { background: #0b0d19; padding: 12px; border-radius: 8px; text-align: center; border: 1px solid #1f253d; }
         .telemetry-block .label { font-size: 11px; color: var(--text-dark); }
@@ -28,7 +32,7 @@
         .slider-header .val { color: #007aff; font-weight: bold; font-family: monospace; }
         .slider-labels { display: flex; justify-content: space-between; font-size: 11px; color: var(--text-dark); margin-top: 4px; }
         input[type=range] { width: 100%; height: 7px; border-radius: 5px; background: #242b47; accent-color: #007aff; outline: none; }
-        #console { background: #05060f; font-family: monospace; padding: 12px; border-radius: 8px; min-height: 48px; color: #34c759; font-size: 13px; border: 1px solid #1f253d; margin-bottom: 12px; }
+        #console { background: #05060f; font-family: monospace; padding: 12px; border-radius: 8px; min-height: 48px; color: #34c759; font-size: 13px; border: 1px solid #1f253d; margin-bottom: 12px; line-height: 1.4; }
         .version-footer { font-family: monospace; font-size: 10px; color: #3a425c; letter-spacing: 2px; text-transform: uppercase; margin-top: 25px; margin-bottom: 10px; opacity: 0.7; }
     </style>
 </head>
@@ -37,7 +41,7 @@
     <h1>TJ-XInetic</h1>
     <div class="branding-sub">Sumo Core Systems</div>
     
-    <button class="connect" id="btnConnect" onclick="connectSerial()">🔌 Connect Robot via OTG</button>
+    <button class="connect" id="btnLinkControl" onclick="toggleConnection()">🔌 Connect Robot via OTG</button>
 
     <div class="card">
         <h3>Live System Signals</h3>
@@ -55,8 +59,18 @@
     <div class="card">
         <h3>System Calibration</h3>
         <div id="console">System status: Offline.<br>Connect your OTG data cable to begin execution.</div>
-        <button onclick="calibrateChannel('THR')">🎮 Calibrate Throttle Trigger</button>
-        <button onclick="calibrateChannel('STR')">🎡 Calibrate Steering Wheel</button>
+        
+        <div class="btn-row">
+            <button onclick="startAutoCalibrate('THR')">🎮 Calibrate Throttle</button>
+            <button onclick="startAutoCalibrate('STR')">🎡 Calibrate Steering</button>
+        </div>
+        
+        <button class="action-step" id="btnCalibrateStep" onclick="advanceCalibrationStep()"></button>
+        
+        <div class="btn-row" style="margin-top: 15px; border-top: 1px dashed #1f253d; padding-top: 12px;">
+            <button class="neutral-btn" onclick="resetToFactoryDefaults()">🔄 Clear to Default</button>
+            <button class="neutral-btn" onclick="requestSavedDeviceData()">📥 Pull Stored Data</button>
+        </div>
     </div>
 
     <div class="card">
@@ -85,11 +99,12 @@
         </div>
     </div>
 
-    <div class="version-footer">BUILD CONFIG STAMP: v1.1.5</div>
+    <div class="version-footer">BUILD CONFIG STAMP: v1.1.9</div>
 
     <script>
         if ('serviceWorker' in navigator) { navigator.serviceWorker.register('sw.js'); }
-        let port, writer, reader;
+        let port, writer, reader, pollerInterval;
+        let isConnected = false;
         let liveSteer = 1500, liveThrot = 1500;
         let fwdBalVal = 0, revBalVal = 0;
         const textEncoder = new TextEncoder();
@@ -97,23 +112,50 @@
         let tMin = 1000, tNeu = 1500, tMax = 2000;
         let sMin = 1000, sNeu = 1500, sMax = 2000;
 
+        // Auto Live Tracking Calibration Architecture Variables
+        let calActive = false, calType = '', calStep = 0;
+        let trackedMin = 2000, trackedNeu = 1500, trackedMax = 1000;
+
+        async function toggleConnection() {
+            if (isConnected) { await disconnectSerial(); } else { await connectSerial(); }
+        }
+
         async function connectSerial() {
             try {
                 port = await navigator.serial.requestPort();
                 await port.open({ baudRate: 115200 });
                 writer = port.writable.getWriter();
-                document.getElementById("btnConnect").innerText = "✅ Robot Connected";
-                document.getElementById("btnConnect").style.background = "#34c759";
+                
+                isConnected = true;
+                let btn = document.getElementById("btnLinkControl");
+                btn.innerText = "🛑 Disconnect Robot Link";
+                btn.className = "disconnect";
                 
                 startReadLoop();
                 
-                // Handshake initialization request to populate current saved settings
-                setTimeout(async () => {
-                    if (writer) { await writer.write(textEncoder.encode("INIT\n")); }
-                }, 600);
-
-                setInterval(async () => { if (writer) { try { await writer.write(textEncoder.encode("R\n")); } catch(e){} } }, 150);
+                setTimeout(async () => { if (writer) { await writer.write(textEncoder.encode("INIT\n")); } }, 600);
+                pollerInterval = setInterval(async () => { if (writer) { try { await writer.write(textEncoder.encode("R\n")); } catch(e){} } }, 150);
             } catch (e) { document.getElementById("console").innerText = "Connection Error: " + e.message; }
+        }
+
+        async function disconnectSerial() {
+            try {
+                clearInterval(pollerInterval);
+                if (reader) { await reader.cancel(); reader.releaseLock(); }
+                if (writer) { writer.releaseLock(); }
+                if (port) { await port.close(); }
+            } catch(e) {}
+            
+            isConnected = false;
+            let btn = document.getElementById("btnLinkControl");
+            btn.innerText = "🔌 Connect Robot via OTG";
+            btn.className = "connect";
+            
+            document.getElementById("lblLiveSteer").innerText = "---";
+            document.getElementById("lblLiveThrot").innerText = "---";
+            document.getElementById("lblPwmLeft").innerText = "0";
+            document.getElementById("lblPwmRight").innerText = "0";
+            document.getElementById("console").innerHTML = "System status: Offline.<br>Connection closed safely.";
         }
 
         async function startReadLoop() {
@@ -128,22 +170,18 @@
                     for (let line of lines) {
                         line = line.trim();
                         
-                        // Parse configuration initialization return data stream
                         if (line.startsWith("CONFIG:")) {
                             let params = line.replace("CONFIG:", "").split(",");
                             if (params.length === 8) {
-                                fwdBalVal = parseInt(params[0]);
-                                revBalVal = parseInt(params[1]);
+                                fwdBalVal = parseInt(params[0]); revBalVal = parseInt(params[1]);
                                 tMin = parseInt(params[2]); tNeu = parseInt(params[3]); tMax = parseInt(params[4]);
                                 sMin = parseInt(params[5]); sNeu = parseInt(params[6]); sMax = parseInt(params[7]);
 
-                                // Apply downloaded variables directly to HTML interface elements
                                 document.getElementById("slideFBAL").value = fwdBalVal;
                                 document.getElementById("slideRBAL").value = revBalVal;
-                                updateLabel('FBAL', fwdBalVal);
-                                updateLabel('RBAL', revBalVal);
+                                updateLabel('FBAL', fwdBalVal); updateLabel('RBAL', revBalVal);
 
-                                document.getElementById("console").innerHTML = `<span style='color: #34c759;'>EEPROM Loaded successfully!</span><br>THR: ${tMin}-${tNeu}-${tMax} | STR: ${sMin}-${sNeu}-${sMax}`;
+                                document.getElementById("console").innerHTML = `<span style='color: #34c759;'>EEPROM Synchronized!</span><br>THR: ${tMin}-${tNeu}-${tMax}<br>STR: ${sMin}-${sNeu}-${sMax}`;
                             }
                         }
                         
@@ -153,12 +191,18 @@
                                 liveSteer = parseInt(parts[0]); liveThrot = parseInt(parts[1]);
                                 document.getElementById("lblLiveSteer").innerText = liveSteer + " μs";
                                 document.getElementById("lblLiveThrot").innerText = liveThrot + " μs";
+                                
+                                // Call live range intercept engine if calibration phase 2 is currently processing
+                                if (calActive && calStep === 2) {
+                                    runLiveRangeTracker();
+                                }
+                                
                                 computeExpectedPWM();
                             }
                         }
                     }
                 }
-            } catch (e) { document.getElementById("console").innerText = "Stream closed: " + e.message; }
+            } catch (e) { if(isConnected) document.getElementById("console").innerText = "Stream closed: " + e.message; }
         }
 
         function computeExpectedPWM() {
@@ -179,23 +223,108 @@
             steerVal = Math.max(-255, Math.min(255, steerVal));
             throtVal = Math.max(-255, Math.min(255, throtVal));
 
-            let leftPwr = throtVal + steerVal;
-            let rightPwr = throtVal - steerVal;
+            let leftPwr = throtVal + steerVal; let rightPwr = throtVal - steerVal;
 
             let fL = 1.0, fR = 1.0, rL = 1.0, rR = 1.0;
             if (fwdBalVal < 0) { fL = 1.0 + (fwdBalVal / 100.0); } else { fR = 1.0 - (fwdBalVal / 100.0); }
             if (revBalVal < 0) { rL = 1.0 + (revBalVal / 100.0); } else { rR = 1.0 - (revBalVal / 100.0); }
 
-            if (leftPwr > 0)  leftPwr  *= fL;
-            if (rightPwr > 0) rightPwr *= fR;
-            if (leftPwr < 0)  leftPwr  *= rL;
-            if (rightPwr < 0) rightPwr *= rR;
+            if (leftPwr > 0) leftPwr *= fL; if (rightPwr > 0) rightPwr *= fR;
+            if (leftPwr < 0) leftPwr *= rL; if (rightPwr < 0) rightPwr *= rR;
 
             leftPwr = Math.round(Math.max(-255, Math.min(255, leftPwr)));
             rightPwr = Math.round(Math.max(-255, Math.min(255, rightPwr)));
 
             document.getElementById("lblPwmLeft").innerText = (leftPwr > 0 ? "+" : "") + leftPwr;
             document.getElementById("lblPwmRight").innerText = (rightPwr > 0 ? "+" : "") + rightPwr;
+        }
+
+        // AUTO-SAMPLING LIVE TRACKING CALIBRATION SYSTEM
+        function startAutoCalibrate(type) {
+            if (!isConnected) { alert("Please connect your OTG link first!"); return; }
+            calActive = true; calType = type; calStep = 1;
+            let name = (type === 'THR') ? "Throttle Trigger" : "Steering Wheel";
+            
+            document.getElementById("console").innerHTML = `<span style='color: #ff9500; font-weight:bold;'>[STEP 1/2]: Lock Center Reference</span><br>Leave your ${name} untouched at REST (Neutral), then click the button below.`;
+            let stepBtn = document.getElementById("btnCalibrateStep");
+            stepBtn.innerText = "OK, Center is Ready 👍";
+            stepBtn.style.display = "block";
+        }
+
+        function runLiveRangeTracker() {
+            let currentSignal = (calType === 'THR') ? liveThrot : liveSteer;
+            
+            // Log global limits dynamically as the user moves the stick
+            if (currentSignal < trackedMin) trackedMin = currentSignal;
+            if (currentSignal > trackedMax) trackedMax = currentSignal;
+
+            let name = (calType === 'THR') ? "Throttle" : "Steering";
+            document.getElementById("console").innerHTML = `
+                <span style='color: #00ffcc; font-weight:bold;'>[STEP 2/2]: Live Boundary Scan</span><br>
+                Move your ${name} stick all the way to its **MAXIMUM** and **MINIMUM** bounds.<br><br>
+                <span style='color:#b0b5c4;'>Live Trapped Ranges:</span><br>
+                Detected MIN: <span style='color:#ff3b30;font-family:monospace;'>${trackedMin}μs</span><br>
+                Detected MAX: <span style='color:#34c759;font-family:monospace;'>${trackedMax}μs</span><br><br>
+                Click Done when you've hit both limits!
+            `;
+        }
+
+        async function advanceCalibrationStep() {
+            let stepBtn = document.getElementById("btnCalibrateStep");
+            let logger = document.getElementById("console");
+
+            if (calStep === 1) {
+                // Capture exact center position snapshot
+                trackedNeu = (calType === 'THR') ? liveThrot : liveSteer;
+                
+                // Initialize tracking boundaries with current center position
+                trackedMin = trackedNeu;
+                trackedMax = trackedNeu;
+                calStep = 2;
+
+                let name = (calType === 'THR') ? "Throttle" : "Steering";
+                stepBtn.innerText = "Done, Save Boundaries ✅";
+                return;
+            }
+            if (calStep === 2) {
+                // Verify limits are valid signals before passing to calculation maps
+                if (trackedMax - trackedMin < 200) {
+                    alert("Calibration Error: Detected signal range is too narrow. Please try moving the stick slowly to its absolute endpoints.");
+                    calActive = false;
+                    stepBtn.style.display = "none";
+                    requestSavedDeviceData();
+                    return;
+                }
+
+                // Apply mapped boundaries directly to state parameters
+                if (calType === 'THR') { tMin = trackedMin; tNeu = trackedNeu; tMax = trackedMax; } 
+                else { sMin = trackedMin; sNeu = trackedNeu; sMax = trackedMax; }
+
+                let command = `SET_${calType}=${trackedMin},${trackedNeu},${trackedMax}\n`;
+                if (writer) { await writer.write(textEncoder.encode(command)); }
+
+                logger.innerHTML = `<span style='color: var(--accent-cyan); font-weight:bold;'>✅ Calibration Burned!</span><br>Min: ${trackedMin} | Center: ${trackedNeu} | Max: ${trackedMax}`;
+                stepBtn.style.display = "none";
+                calActive = false;
+                computeExpectedPWM();
+            }
+        }
+
+        function resetToFactoryDefaults() {
+            fwdBalVal = 0; revBalVal = 0;
+            tMin = 1000; tNeu = 1500; tMax = 2000;
+            sMin = 1000; sNeu = 1500; sMax = 2000;
+
+            document.getElementById("slideFBAL").value = 0;
+            document.getElementById("slideRBAL").value = 0;
+            updateLabel('FBAL', 0); updateLabel('RBAL', 0);
+            computeExpectedPWM();
+            document.getElementById("console").innerHTML = "<span style='color: #ff3b30;'>UI Reset to default safety values (1000-1500-2000). Click burn button below if you want to push these to the robot.</span>";
+        }
+
+        async function requestSavedDeviceData() {
+            if (!isConnected) { alert("Connect your OTG link first!"); return; }
+            await writer.write(textEncoder.encode("INIT\n"));
         }
 
         function updateLabel(key, val) {
@@ -219,39 +348,6 @@
             if (!writer) { alert("Please connect your OTG link first!"); return; }
             await writer.write(textEncoder.encode("SAVE\n"));
             document.getElementById("console").innerHTML = "<span style='color: #ff9500;'>CRITICAL WRITE: Configurations locked permanently into EEPROM memory!</span>";
-        }
-
-        const delay = ms => new Promise(res => setTimeout(res, ms));
-
-        async function calibrateChannel(type) {
-            if (!writer) { alert("Please connect your OTG link first!"); return; }
-            let logger = document.getElementById("console");
-            let name = (type === 'THR') ? "Throttle Trigger" : "Steering Wheel";
-            
-            logger.innerHTML = `[1/3] Keep ${name} at REST.<br>Capturing Neutral pocket in 3...`; await delay(1000);
-            logger.innerHTML = `[1/3] Keep ${name} at REST.<br>Capturing Neutral pocket in 2...`; await delay(1000);
-            logger.innerHTML = `[1/3] Keep ${name} at REST.<br>Capturing Neutral pocket in 1...`; await delay(1000);
-            let neutral = (type === 'THR') ? liveThrot : liveSteer;
-            if (type === 'THR') tNeu = neutral; else sNeu = neutral;
-            logger.innerHTML = `Captured Center: ${neutral}μs.`; await delay(1500);
-
-            logger.innerHTML = `[2/3] 👉 Pull/Turn ${name} to MAXIMUM!<br>Hold position firmly for 3...`; await delay(1000);
-            logger.innerHTML = `[2/3] 👉 Pull/Turn ${name} to MAXIMUM!<br>Hold position firmly for 2...`; await delay(1000);
-            logger.innerHTML = `[2/3] 👉 Pull/Turn ${name} to MAXIMUM!<br>Hold position firmly for 1...`; await delay(1000);
-            let max = (type === 'THR') ? liveThrot : liveSteer;
-            if (type === 'THR') tMax = max; else sMax = max;
-            logger.innerHTML = `Captured Max: ${max}μs.`; await delay(1500);
-
-            logger.innerHTML = `[3/3] 👈 Push/Turn ${name} to MINIMUM!<br>Hold position firmly for 3...`; await delay(1000);
-            logger.innerHTML = `[3/3] 👈 Push/Turn ${name} to MINIMUM!<br>Hold position firmly for 2...`; await delay(1000);
-            logger.innerHTML = `[3/3] 👈 Push/Turn ${name} to MINIMUM!<br>Hold position firmly for 1...`; await delay(1000);
-            let min = (type === 'THR') ? liveThrot : liveSteer;
-            if (type === 'THR') tMin = min; else sMin = min;
-
-            let command = `SET_${type}=${min},${neutral},${max}\n`;
-            await writer.write(textEncoder.encode(command));
-            logger.innerHTML = `<span style='color: var(--accent-cyan);'>✅ New Values Set!</span><br>Min: ${min} | Neu: ${neutral} | Max: ${max}`;
-            computeExpectedPWM();
         }
     </script>
 </body>
