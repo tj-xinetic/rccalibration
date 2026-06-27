@@ -25,7 +25,8 @@
         .telemetry-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
         .telemetry-block { background: #0b0d19; padding: 12px; border-radius: 8px; text-align: center; border: 1px solid #1f253d; }
         .telemetry-block .label { font-size: 11px; color: var(--text-dark); }
-        .telemetry-block .val { font-size: 20px; font-weight: bold; color: var(--accent-cyan); font-family: monospace; }
+        .telemetry-block .val { font-size: 20px; font-weight: bold; color: var(--accent-cyan); font-family: monospace; margin: 4px 0; }
+        .telemetry-block .cal-summary { font-size: 10px; font-family: monospace; color: #ff9500; font-weight: 500; margin-top: 4px; }
         .telemetry-divider { grid-column: span 2; border-top: 1px dashed #1f253d; margin: 8px 0; }
         .slider-group { margin: 25px 0 10px 0; }
         .slider-header { display: flex; justify-content: space-between; font-size: 14px; color: #b0b5c4; margin-bottom: 6px; }
@@ -46,8 +47,16 @@
     <div class="card">
         <h3>Live System Signals</h3>
         <div class="telemetry-grid">
-            <div class="telemetry-block"><div class="label">Steering (A0)</div><div class="val" id="lblLiveSteer">---</div></div>
-            <div class="telemetry-block"><div class="label">Throttle (A1)</div><div class="val" id="lblLiveThrot">---</div></div>
+            <div class="telemetry-block">
+                <div class="label">Steering (A0)</div>
+                <div class="val" id="lblLiveSteer">---</div>
+                <div class="cal-summary" id="lblSummarySteer">Map: 1000 | 1500 | 2000</div>
+            </div>
+            <div class="telemetry-block">
+                <div class="label">Throttle (A1)</div>
+                <div class="val" id="lblLiveThrot">---</div>
+                <div class="cal-summary" id="lblSummaryThrot">Map: 1000 | 1500 | 2000</div>
+            </div>
             
             <div class="telemetry-divider"></div>
             
@@ -99,7 +108,7 @@
         </div>
     </div>
 
-    <div class="version-footer">BUILD CONFIG STAMP: v1.1.9</div>
+    <div class="version-footer">BUILD CONFIG STAMP: v1.2.0</div>
 
     <script>
         if ('serviceWorker' in navigator) { navigator.serviceWorker.register('sw.js'); }
@@ -112,7 +121,6 @@
         let tMin = 1000, tNeu = 1500, tMax = 2000;
         let sMin = 1000, sNeu = 1500, sMax = 2000;
 
-        // Auto Live Tracking Calibration Architecture Variables
         let calActive = false, calType = '', calStep = 0;
         let trackedMin = 2000, trackedNeu = 1500, trackedMax = 1000;
 
@@ -180,6 +188,8 @@
                                 document.getElementById("slideFBAL").value = fwdBalVal;
                                 document.getElementById("slideRBAL").value = revBalVal;
                                 updateLabel('FBAL', fwdBalVal); updateLabel('RBAL', revBalVal);
+                                
+                                refreshTelemetryLabels();
 
                                 document.getElementById("console").innerHTML = `<span style='color: #34c759;'>EEPROM Synchronized!</span><br>THR: ${tMin}-${tNeu}-${tMax}<br>STR: ${sMin}-${sNeu}-${sMax}`;
                             }
@@ -192,7 +202,6 @@
                                 document.getElementById("lblLiveSteer").innerText = liveSteer + " μs";
                                 document.getElementById("lblLiveThrot").innerText = liveThrot + " μs";
                                 
-                                // Call live range intercept engine if calibration phase 2 is currently processing
                                 if (calActive && calStep === 2) {
                                     runLiveRangeTracker();
                                 }
@@ -203,6 +212,11 @@
                     }
                 }
             } catch (e) { if(isConnected) document.getElementById("console").innerText = "Stream closed: " + e.message; }
+        }
+
+        function refreshTelemetryLabels() {
+            document.getElementById("lblSummarySteer").innerText = `Map: ${sMin} | ${sNeu} | ${sMax}`;
+            document.getElementById("lblSummaryThrot").innerText = `Map: ${tMin} | ${tNeu} | ${tMax}`;
         }
 
         function computeExpectedPWM() {
@@ -239,7 +253,6 @@
             document.getElementById("lblPwmRight").innerText = (rightPwr > 0 ? "+" : "") + rightPwr;
         }
 
-        // AUTO-SAMPLING LIVE TRACKING CALIBRATION SYSTEM
         function startAutoCalibrate(type) {
             if (!isConnected) { alert("Please connect your OTG link first!"); return; }
             calActive = true; calType = type; calStep = 1;
@@ -254,7 +267,6 @@
         function runLiveRangeTracker() {
             let currentSignal = (calType === 'THR') ? liveThrot : liveSteer;
             
-            // Log global limits dynamically as the user moves the stick
             if (currentSignal < trackedMin) trackedMin = currentSignal;
             if (currentSignal > trackedMax) trackedMax = currentSignal;
 
@@ -274,34 +286,38 @@
             let logger = document.getElementById("console");
 
             if (calStep === 1) {
-                // Capture exact center position snapshot
                 trackedNeu = (calType === 'THR') ? liveThrot : liveSteer;
-                
-                // Initialize tracking boundaries with current center position
                 trackedMin = trackedNeu;
                 trackedMax = trackedNeu;
                 calStep = 2;
 
-                let name = (calType === 'THR') ? "Throttle" : "Steering";
+                // Update the corresponding channel telemetry summary block with the mid position immediately
+                if (calType === 'THR') {
+                    document.getElementById("lblSummaryThrot").innerText = `Center Locked: ${trackedNeu}μs`;
+                } else {
+                    document.getElementById("lblSummarySteer").innerText = `Center Locked: ${trackedNeu}μs`;
+                }
+
                 stepBtn.innerText = "Done, Save Boundaries ✅";
                 return;
             }
             if (calStep === 2) {
-                // Verify limits are valid signals before passing to calculation maps
                 if (trackedMax - trackedMin < 200) {
-                    alert("Calibration Error: Detected signal range is too narrow. Please try moving the stick slowly to its absolute endpoints.");
+                    alert("Calibration Error: Detected signal range is too narrow. Try moving the stick to its endpoints.");
                     calActive = false;
                     stepBtn.style.display = "none";
                     requestSavedDeviceData();
                     return;
                 }
 
-                // Apply mapped boundaries directly to state parameters
                 if (calType === 'THR') { tMin = trackedMin; tNeu = trackedNeu; tMax = trackedMax; } 
                 else { sMin = trackedMin; sNeu = trackedNeu; sMax = trackedMax; }
 
                 let command = `SET_${calType}=${trackedMin},${trackedNeu},${trackedMax}\n`;
                 if (writer) { await writer.write(textEncoder.encode(command)); }
+
+                // Force full view configuration dump into telemetry summaries upon completion
+                refreshTelemetryLabels();
 
                 logger.innerHTML = `<span style='color: var(--accent-cyan); font-weight:bold;'>✅ Calibration Burned!</span><br>Min: ${trackedMin} | Center: ${trackedNeu} | Max: ${trackedMax}`;
                 stepBtn.style.display = "none";
@@ -318,6 +334,7 @@
             document.getElementById("slideFBAL").value = 0;
             document.getElementById("slideRBAL").value = 0;
             updateLabel('FBAL', 0); updateLabel('RBAL', 0);
+            refreshTelemetryLabels();
             computeExpectedPWM();
             document.getElementById("console").innerHTML = "<span style='color: #ff3b30;'>UI Reset to default safety values (1000-1500-2000). Click burn button below if you want to push these to the robot.</span>";
         }
