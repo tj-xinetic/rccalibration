@@ -22,14 +22,13 @@
         .telemetry-block { background: #0b0d19; padding: 12px; border-radius: 8px; text-align: center; border: 1px solid #1f253d; }
         .telemetry-block .label { font-size: 11px; color: var(--text-dark); }
         .telemetry-block .val { font-size: 20px; font-weight: bold; color: var(--accent-cyan); font-family: monospace; }
+        .telemetry-divider { grid-column: span 2; border-top: 1px dashed #1f253d; margin: 8px 0; }
         .slider-group { margin: 25px 0 10px 0; }
         .slider-header { display: flex; justify-content: space-between; font-size: 14px; color: #b0b5c4; margin-bottom: 6px; }
         .slider-header .val { color: #007aff; font-weight: bold; font-family: monospace; }
         .slider-labels { display: flex; justify-content: space-between; font-size: 11px; color: var(--text-dark); margin-top: 4px; }
         input[type=range] { width: 100%; height: 7px; border-radius: 5px; background: #242b47; accent-color: #007aff; outline: none; }
         #console { background: #05060f; font-family: monospace; padding: 12px; border-radius: 8px; min-height: 48px; color: #34c759; font-size: 13px; border: 1px solid #1f253d; margin-bottom: 12px; }
-        
-        /* Subtle Versioning Footer Style */
         .version-footer { font-family: monospace; font-size: 10px; color: #3a425c; letter-spacing: 2px; text-transform: uppercase; margin-top: 25px; margin-bottom: 10px; opacity: 0.7; }
     </style>
 </head>
@@ -41,10 +40,15 @@
     <button class="connect" id="btnConnect" onclick="connectSerial()">🔌 Connect Robot via OTG</button>
 
     <div class="card">
-        <h3>Live Signal Telemetry</h3>
+        <h3>Live System Signals</h3>
         <div class="telemetry-grid">
             <div class="telemetry-block"><div class="label">Steering (A0)</div><div class="val" id="lblLiveSteer">---</div></div>
             <div class="telemetry-block"><div class="label">Throttle (A1)</div><div class="val" id="lblLiveThrot">---</div></div>
+            
+            <div class="telemetry-divider"></div>
+            
+            <div class="telemetry-block"><div class="label">Expected Motor L</div><div class="val" id="lblPwmLeft" style="color: #ff9500;">0</div></div>
+            <div class="telemetry-block"><div class="label">Expected Motor R</div><div class="val" id="lblPwmRight" style="color: #ff9500;">0</div></div>
         </div>
     </div>
 
@@ -81,13 +85,17 @@
         </div>
     </div>
 
-    <div class="version-footer">BUILD CONFIG STAMP: v1.1.2</div>
+    <div class="version-footer">BUILD CONFIG STAMP: v1.1.5</div>
 
     <script>
         if ('serviceWorker' in navigator) { navigator.serviceWorker.register('sw.js'); }
         let port, writer, reader;
         let liveSteer = 1500, liveThrot = 1500;
+        let fwdBalVal = 0, revBalVal = 0;
         const textEncoder = new TextEncoder();
+
+        let tMin = 1000, tNeu = 1500, tMax = 2000;
+        let sMin = 1000, sNeu = 1500, sMax = 2000;
 
         async function connectSerial() {
             try {
@@ -96,8 +104,14 @@
                 writer = port.writable.getWriter();
                 document.getElementById("btnConnect").innerText = "✅ Robot Connected";
                 document.getElementById("btnConnect").style.background = "#34c759";
-                document.getElementById("console").innerHTML = "Link Established successfully!<br>Polling telemetry streams...";
+                
                 startReadLoop();
+                
+                // Handshake initialization request to populate current saved settings
+                setTimeout(async () => {
+                    if (writer) { await writer.write(textEncoder.encode("INIT\n")); }
+                }, 600);
+
                 setInterval(async () => { if (writer) { try { await writer.write(textEncoder.encode("R\n")); } catch(e){} } }, 150);
             } catch (e) { document.getElementById("console").innerText = "Connection Error: " + e.message; }
         }
@@ -113,12 +127,33 @@
                     let lines = buffer.split("\n"); buffer = lines.pop(); 
                     for (let line of lines) {
                         line = line.trim();
+                        
+                        // Parse configuration initialization return data stream
+                        if (line.startsWith("CONFIG:")) {
+                            let params = line.replace("CONFIG:", "").split(",");
+                            if (params.length === 8) {
+                                fwdBalVal = parseInt(params[0]);
+                                revBalVal = parseInt(params[1]);
+                                tMin = parseInt(params[2]); tNeu = parseInt(params[3]); tMax = parseInt(params[4]);
+                                sMin = parseInt(params[5]); sNeu = parseInt(params[6]); sMax = parseInt(params[7]);
+
+                                // Apply downloaded variables directly to HTML interface elements
+                                document.getElementById("slideFBAL").value = fwdBalVal;
+                                document.getElementById("slideRBAL").value = revBalVal;
+                                updateLabel('FBAL', fwdBalVal);
+                                updateLabel('RBAL', revBalVal);
+
+                                document.getElementById("console").innerHTML = `<span style='color: #34c759;'>EEPROM Loaded successfully!</span><br>THR: ${tMin}-${tNeu}-${tMax} | STR: ${sMin}-${sNeu}-${sMax}`;
+                            }
+                        }
+                        
                         if (line.startsWith("DATA:")) {
                             let parts = line.replace("DATA:", "").split(",");
                             if (parts.length === 2) {
                                 liveSteer = parseInt(parts[0]); liveThrot = parseInt(parts[1]);
                                 document.getElementById("lblLiveSteer").innerText = liveSteer + " μs";
                                 document.getElementById("lblLiveThrot").innerText = liveThrot + " μs";
+                                computeExpectedPWM();
                             }
                         }
                     }
@@ -126,13 +161,57 @@
             } catch (e) { document.getElementById("console").innerText = "Stream closed: " + e.message; }
         }
 
-        async function updateBalance(key, val) {
+        function computeExpectedPWM() {
+            if (Math.abs(liveSteer - sNeu) <= 40 && Math.abs(liveThrot - tNeu) <= 40) {
+                document.getElementById("lblPwmLeft").innerText = "0";
+                document.getElementById("lblPwmRight").innerText = "0";
+                return;
+            }
+
+            let steerVal = 0, throtVal = 0;
+            if (Math.abs(liveSteer - sNeu) > 40) {
+                steerVal = liveSteer < sNeu ? ((liveSteer - sMin) / (sNeu - sMin) * 255) - 255 : ((liveSteer - sNeu) / (sMax - sNeu) * 255);
+            }
+            if (Math.abs(liveThrot - tNeu) > 40) {
+                throtVal = liveThrot < tNeu ? ((liveThrot - tMin) / (tNeu - tMin) * 255) - 255 : ((liveThrot - tNeu) / (tMax - tNeu) * 255);
+            }
+
+            steerVal = Math.max(-255, Math.min(255, steerVal));
+            throtVal = Math.max(-255, Math.min(255, throtVal));
+
+            let leftPwr = throtVal + steerVal;
+            let rightPwr = throtVal - steerVal;
+
+            let fL = 1.0, fR = 1.0, rL = 1.0, rR = 1.0;
+            if (fwdBalVal < 0) { fL = 1.0 + (fwdBalVal / 100.0); } else { fR = 1.0 - (fwdBalVal / 100.0); }
+            if (revBalVal < 0) { rL = 1.0 + (revBalVal / 100.0); } else { rR = 1.0 - (revBalVal / 100.0); }
+
+            if (leftPwr > 0)  leftPwr  *= fL;
+            if (rightPwr > 0) rightPwr *= fR;
+            if (leftPwr < 0)  leftPwr  *= rL;
+            if (rightPwr < 0) rightPwr *= rR;
+
+            leftPwr = Math.round(Math.max(-255, Math.min(255, leftPwr)));
+            rightPwr = Math.round(Math.max(-255, Math.min(255, rightPwr)));
+
+            document.getElementById("lblPwmLeft").innerText = (leftPwr > 0 ? "+" : "") + leftPwr;
+            document.getElementById("lblPwmRight").innerText = (rightPwr > 0 ? "+" : "") + rightPwr;
+        }
+
+        function updateLabel(key, val) {
             let num = parseInt(val);
             let displayStr = "Balanced";
             if (num < 0) { displayStr = "Move Left (Motor L -" + Math.abs(num) + "%)"; }
             else if (num > 0) { displayStr = "Move Right (Motor R -" + num + "%)"; }
-            
             document.getElementById("lbl" + key).innerText = displayStr;
+        }
+
+        async function updateBalance(key, val) {
+            let num = parseInt(val);
+            if (key === 'FBAL') fwdBalVal = num;
+            if (key === 'RBAL') revBalVal = num;
+            updateLabel(key, num);
+            computeExpectedPWM();
             if (writer) { await writer.write(textEncoder.encode(`${key}=${val}\n`)); }
         }
 
@@ -153,22 +232,26 @@
             logger.innerHTML = `[1/3] Keep ${name} at REST.<br>Capturing Neutral pocket in 2...`; await delay(1000);
             logger.innerHTML = `[1/3] Keep ${name} at REST.<br>Capturing Neutral pocket in 1...`; await delay(1000);
             let neutral = (type === 'THR') ? liveThrot : liveSteer;
+            if (type === 'THR') tNeu = neutral; else sNeu = neutral;
             logger.innerHTML = `Captured Center: ${neutral}μs.`; await delay(1500);
 
             logger.innerHTML = `[2/3] 👉 Pull/Turn ${name} to MAXIMUM!<br>Hold position firmly for 3...`; await delay(1000);
             logger.innerHTML = `[2/3] 👉 Pull/Turn ${name} to MAXIMUM!<br>Hold position firmly for 2...`; await delay(1000);
             logger.innerHTML = `[2/3] 👉 Pull/Turn ${name} to MAXIMUM!<br>Hold position firmly for 1...`; await delay(1000);
             let max = (type === 'THR') ? liveThrot : liveSteer;
+            if (type === 'THR') tMax = max; else sMax = max;
             logger.innerHTML = `Captured Max: ${max}μs.`; await delay(1500);
 
             logger.innerHTML = `[3/3] 👈 Push/Turn ${name} to MINIMUM!<br>Hold position firmly for 3...`; await delay(1000);
             logger.innerHTML = `[3/3] 👈 Push/Turn ${name} to MINIMUM!<br>Hold position firmly for 2...`; await delay(1000);
             logger.innerHTML = `[3/3] 👈 Push/Turn ${name} to MINIMUM!<br>Hold position firmly for 1...`; await delay(1000);
             let min = (type === 'THR') ? liveThrot : liveSteer;
+            if (type === 'THR') tMin = min; else sMin = min;
 
             let command = `SET_${type}=${min},${neutral},${max}\n`;
             await writer.write(textEncoder.encode(command));
-            logger.innerHTML = `<span style='color: var(--accent-cyan);'>✅ ${name} Calibration Localized!</span><br>Min: ${min} | Neu: ${neutral} | Max: ${max}`;
+            logger.innerHTML = `<span style='color: var(--accent-cyan);'>✅ New Values Set!</span><br>Min: ${min} | Neu: ${neutral} | Max: ${max}`;
+            computeExpectedPWM();
         }
     </script>
 </body>
