@@ -83,8 +83,19 @@
     </div>
 
     <div class="card">
-        <h3>Motor Balance Tuning</h3>
+        <h3>Motor Balance & Input Tuning</h3>
         
+        <div class="slider-group">
+            <div class="slider-header">
+                <span>Stick Deadzone Range</span>
+                <span class="val" id="lblDeadzone">40 μs</span>
+            </div>
+            <input type="range" min="0" max="100" step="5" value="40" id="slideDeadzone" oninput="updateDeadzone(this.value)">
+            <div class="slider-labels"><span>0 μs (Ultra Sensitive)</span><span>Default (40)</span><span>100 μs (Wide Deadzone)</span></div>
+        </div>
+
+        <div style="border-top: 1px dashed #1f253d; margin: 20px 0;"></div>
+
         <div class="slider-group">
             <div class="slider-header">
                 <span>Forward Steering Alignment</span>
@@ -108,14 +119,14 @@
         </div>
     </div>
 
-    <div class="version-footer">BUILD CONFIG STAMP: v1.2.0</div>
+    <div class="version-footer">BUILD CONFIG STAMP: v1.3.0</div>
 
     <script>
         if ('serviceWorker' in navigator) { navigator.serviceWorker.register('sw.js'); }
         let port, writer, reader, pollerInterval;
         let isConnected = false;
         let liveSteer = 1500, liveThrot = 1500;
-        let fwdBalVal = 0, revBalVal = 0;
+        let fwdBalVal = 0, revBalVal = 0, deadzoneVal = 40;
         const textEncoder = new TextEncoder();
 
         let tMin = 1000, tNeu = 1500, tMax = 2000;
@@ -178,12 +189,20 @@
                     for (let line of lines) {
                         line = line.trim();
                         
+                        // Parse expanded incoming device profile parameters
                         if (line.startsWith("CONFIG:")) {
                             let params = line.replace("CONFIG:", "").split(",");
-                            if (params.length === 8) {
+                            if (params.length >= 8) {
                                 fwdBalVal = parseInt(params[0]); revBalVal = parseInt(params[1]);
                                 tMin = parseInt(params[2]); tNeu = parseInt(params[3]); tMax = parseInt(params[4]);
                                 sMin = parseInt(params[5]); sNeu = parseInt(params[6]); sMax = parseInt(params[7]);
+                                
+                                // Parse optional 9th argument if microcontroller provides deadzone setting
+                                if (params.length === 9) {
+                                    deadzoneVal = parseInt(params[8]);
+                                    document.getElementById("slideDeadzone").value = deadzoneVal;
+                                    document.getElementById("lblDeadzone").innerText = deadzoneVal + " μs";
+                                }
 
                                 document.getElementById("slideFBAL").value = fwdBalVal;
                                 document.getElementById("slideRBAL").value = revBalVal;
@@ -220,17 +239,18 @@
         }
 
         function computeExpectedPWM() {
-            if (Math.abs(liveSteer - sNeu) <= 40 && Math.abs(liveThrot - tNeu) <= 40) {
+            // Apply customizable deadzone limit check dynamically
+            if (Math.abs(liveSteer - sNeu) <= deadzoneVal && Math.abs(liveThrot - tNeu) <= deadzoneVal) {
                 document.getElementById("lblPwmLeft").innerText = "0";
                 document.getElementById("lblPwmRight").innerText = "0";
                 return;
             }
 
             let steerVal = 0, throtVal = 0;
-            if (Math.abs(liveSteer - sNeu) > 40) {
+            if (Math.abs(liveSteer - sNeu) > deadzoneVal) {
                 steerVal = liveSteer < sNeu ? ((liveSteer - sMin) / (sNeu - sMin) * 255) - 255 : ((liveSteer - sNeu) / (sMax - sNeu) * 255);
             }
-            if (Math.abs(liveThrot - tNeu) > 40) {
+            if (Math.abs(liveThrot - tNeu) > deadzoneVal) {
                 throtVal = liveThrot < tNeu ? ((liveThrot - tMin) / (tNeu - tMin) * 255) - 255 : ((liveThrot - tNeu) / (tMax - tNeu) * 255);
             }
 
@@ -291,7 +311,6 @@
                 trackedMax = trackedNeu;
                 calStep = 2;
 
-                // Update the corresponding channel telemetry summary block with the mid position immediately
                 if (calType === 'THR') {
                     document.getElementById("lblSummaryThrot").innerText = `Center Locked: ${trackedNeu}μs`;
                 } else {
@@ -316,7 +335,6 @@
                 let command = `SET_${calType}=${trackedMin},${trackedNeu},${trackedMax}\n`;
                 if (writer) { await writer.write(textEncoder.encode(command)); }
 
-                // Force full view configuration dump into telemetry summaries upon completion
                 refreshTelemetryLabels();
 
                 logger.innerHTML = `<span style='color: var(--accent-cyan); font-weight:bold;'>✅ Calibration Burned!</span><br>Min: ${trackedMin} | Center: ${trackedNeu} | Max: ${trackedMax}`;
@@ -327,16 +345,18 @@
         }
 
         function resetToFactoryDefaults() {
-            fwdBalVal = 0; revBalVal = 0;
+            fwdBalVal = 0; revBalVal = 0; deadzoneVal = 40;
             tMin = 1000; tNeu = 1500; tMax = 2000;
             sMin = 1000; sNeu = 1500; sMax = 2000;
 
             document.getElementById("slideFBAL").value = 0;
             document.getElementById("slideRBAL").value = 0;
+            document.getElementById("slideDeadzone").value = 40;
+            document.getElementById("lblDeadzone").innerText = "40 μs";
             updateLabel('FBAL', 0); updateLabel('RBAL', 0);
             refreshTelemetryLabels();
             computeExpectedPWM();
-            document.getElementById("console").innerHTML = "<span style='color: #ff3b30;'>UI Reset to default safety values (1000-1500-2000). Click burn button below if you want to push these to the robot.</span>";
+            document.getElementById("console").innerHTML = "<span style='color: #ff3b30;'>UI Reset to default safety values. Click burn button below if you want to push these to the robot.</span>";
         }
 
         async function requestSavedDeviceData() {
@@ -350,6 +370,13 @@
             if (num < 0) { displayStr = "Move Left (Motor L -" + Math.abs(num) + "%)"; }
             else if (num > 0) { displayStr = "Move Right (Motor R -" + num + "%)"; }
             document.getElementById("lbl" + key).innerText = displayStr;
+        }
+
+        async function updateDeadzone(val) {
+            deadzoneVal = parseInt(val);
+            document.getElementById("lblDeadzone").innerText = deadzoneVal + " μs";
+            computeExpectedPWM();
+            if (writer) { await writer.write(textEncoder.encode(`DZ=${val}\n`)); }
         }
 
         async function updateBalance(key, val) {
